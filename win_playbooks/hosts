@@ -1,0 +1,25 @@
+# inventory file lists hosts that can be acted upon
+# hosts sorted into groups to apply variables and tasks in bulk
+# hosts can be in multiple groups
+# there's a whole child group thing that we won't get into but you can read about here:
+# https://docs.ansible.com/ansible/latest/user_guide/intro_inventory.html
+
+[dcs]
+dc10 ansible_host=10.150.10.254
+dc11 ansible_host=10.150.10.248
+[members]
+fs12 ansible_host=10.150.10.253
+rds20 ansible_host=10.150.10.13
+
+[dcs:vars]
+ansible_user=administrator
+ansible_password=3rt8hg23!
+ansible_connection=winrm
+ansible_winrm_server_cert_validation=ignore
+
+[members:vars]
+ansible_user=administrator
+ansible_password=3rt8hg23!
+ansible_connection=winrm
+ansible_winrm_server_cert_validation=ignore
+

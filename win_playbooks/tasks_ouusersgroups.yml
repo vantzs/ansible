@@ -1,0 +1,64 @@
+# Create OU's, Users, Groups, and Add users to Groups
+---
+- hosts: dc10
+  tasks:
+    - name: Create C:\support\powershell
+      win_shell: New-Item -ItemType Directory -Path C:\support\powershell -Force
+    - name: Copy a single file
+      win_copy:
+        src: ous.txt
+        dest: C:\support\powershell\ous.ps1
+    - name: Call PS1 to Create OU's
+      win_shell: C:\support\powershell\ous.ps1 >> C:\support\powershell\ous.log
+    - name: Add User test-ro
+      win_domain_user:
+        name: test-ro
+        firstname: Test
+        surname: RO
+        password: 'T3stROP@ss'
+        domain_server: dc10
+        enabled: true
+        path: ou=EMPLOYEES,ou=PEOPLE,dc=lab,dc=local
+        state: present
+      register: win_domain_user_result
+      ignore_errors: true
+    - name: Add User test-rw
+      win_domain_user:
+        name: test-rw
+        firstname: Test
+        surname: RW
+        password: 'T3stRWP@ss'
+        domain_server: dc10
+        enabled: true
+        path: ou=EMPLOYEES,ou=PEOPLE,dc=lab,dc=local
+        state: present
+      register: win_domain_user_result
+      ignore_errors: true
+    - name: Create group
+      win_domain_group:
+        name: rw-test
+        scope: domainlocal
+        category: security
+        path: ou=RESOURCES,ou=GROUPS,dc=lab,dc=local
+      ignore_errors: true
+    - name: Create group
+      win_domain_group:
+        name: ro-test
+        scope: domainlocal
+        category: security
+        path: ou=RESOURCES,ou=GROUPS,dc=lab,dc=local
+      ignore_errors: true
+    - name: Add a domain user/group to a domain group
+      win_domain_group_membership:
+        name: ro-test
+        members:
+          - test-ro
+        state: present
+      ignore_errors: true
+    - name: Add a domain user/group to a domain group
+      win_domain_group_membership:
+        name: rw-test
+        members:
+          - test-rw
+        state: present
+      ignore_errors: true

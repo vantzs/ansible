@@ -1,0 +1,91 @@
+# Ansible Playbook to Join File Server (Member Server) to AD
+# Calls Second Playbook to create file shares
+---
+- name: Join File Server to AD
+  hosts: fs12
+  vars:
+    temp_address: 10.150.10.250
+    fs_address: 10.150.10.12
+    fs_netmask_cidr: 24
+    fs_gateway: 10.150.10.1
+    fs_hostname: 'FS12'
+    domain_name: "lab.local"
+    local_admin: '.\administrator'
+    temp_password: '3rt8hg23!'
+    dc_admin: 'administrator@lab.local'
+    dc_password: "{{ lookup('password', 'domain_admin_password.txt length=16 chars=ascii_letters,digits,hexdigits,punctuation') }}"
+    upstream_dns_1: 10.150.10.10
+    upstream_dns_2: 10.150.10.11
+    reverse_dns_zone: "10.150.10.0/24"
+  gather_facts: yes
+  tasks:
+  - name: Add host to Ansible inventory
+    add_host:
+      name: '{{ temp_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986
+    delegate_to: '{{ temp_address }}'
+  - name: Set static IP address
+    win_shell: "(new-netipaddress -InterfaceAlias Ethernet -IPAddress {{ fs_address }} -prefixlength {{fs_netmask_cidr}} -defaultgateway {{ fs_gateway }})"
+    delegate_to: '{{ temp_address }}'  
+    ignore_errors: True 
+  - name: Add host to Ansible inventory with new IP
+    add_host:
+      name: '{{ fs_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ fs_address }}'
+  - name: Set upstream DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '{{ upstream_dns_1 }}'
+      - '{{ upstream_dns_2 }}'
+    delegate_to: '{{ fs_address }}'
+  - name: Change the hostname 
+    win_hostname:
+      name: '{{ fs_hostname }}'
+    register: res
+    delegate_to: '{{ fs_address }}'
+  - name: Reboot
+    win_reboot:
+    when: res.reboot_required   
+    delegate_to: '{{ fs_address }}'
+  - win_domain_membership:
+      dns_domain_name: '{{ domain_name }}'
+      hostname: '{{ fs_hostname }}'
+      domain_admin_user: '{{ dc_admin }}'
+      domain_admin_password: '{{ dc_password }}'
+      domain_ou_path: "OU=SERVERS,OU=DEVICES,DC=lab,DC=local"
+      state: domain
+    register: domain_state
+    delegate_to: '{{ fs_address }}'
+  - win_reboot:
+    when: domain_state.reboot_required
+    delegate_to: '{{ fs_address }}'
+  - name: Check for xRemoteDesktopAdmin Powershell module
+    win_psmodule:
+      name: xRemoteDesktopAdmin
+      state: present
+    delegate_to: "{{ fs_address }}"
+    retries: 30
+    delay: 60
+    register: result           
+    until: result is succeeded
+  - name: Enable Remote Desktop
+    win_dsc:
+      resource_name: xRemoteDesktopAdmin
+      Ensure: present
+      UserAuthentication: NonSecure
+    delegate_to: "{{ fs_address }}"

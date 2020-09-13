@@ -1,0 +1,35 @@
+# Create Directory Structure for Shares
+# Create Shares with Access Based Enumeration and default permissions
+---
+- hosts: fs12
+  tasks:
+  - name: Create directory structure E:\shares
+    win_file:
+      path: E:\shares
+      state: directory
+  - name: Create directory structure E:\shares\general
+    win_file:
+      path: E:\shares\general
+      state: directory
+  - name: Create directory structure E:\shares\hrshare
+    win_file:
+      path: E:\shares\hrshare
+      state: directory
+  - name: Add General Share
+    win_share:
+      name: General Share
+      description: General Share
+      path: E:\shares\general
+      list: yes
+      full: Administrators,rw-test
+      read: ro-test
+      caching_mode: none
+  - name: Add HR Share
+    win_share:
+      name: HR Share
+      description: HR Share
+      path: E:\shares\hrshare
+      list: yes
+      full: Administrators,rw-test,domain admins
+      read: ro-test
+      caching_mode: none

@@ -1,0 +1,19 @@
+# vim: set filetype=ansible ff=unix ts=2 sw=2 ai expandtab :
+#
+# Playbook to configure the environment
+
+- hosts: win_servers
+
+  tasks:
+    - name: create user
+      win_user:
+        name: ansible
+        password: "{{ lookup('password', 'ansible_password.txt length=16 chars=ascii_letters,digits,hexdigits,punctuation') }}"
+        password_never_expires: true
+        account_disabled: no
+        account_locked: no
+        password_expired: no
+        state: present
+        groups:
+          - Administrators
+          - Users

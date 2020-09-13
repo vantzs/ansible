@@ -1,0 +1,85 @@
+# Joins Member Server to Add
+# Sets Static IP and Configures DNS
+---
+- name: Create new Active-Directory Domain & Forest
+  hosts: fs12
+  vars:
+    temp_address: 10.150.10.252
+    dc_address: 10.150.10.12
+    dc_netmask_cidr: 24
+    dc_gateway: 10.150.10.1
+    dc_hostname: 'FS12'
+    domain_name: "lab.local"
+    local_admin: '.\administrator'
+    temp_password: '3rt8hg23!'
+    dc_admin: 'administrator@lab.local'
+    dc_password: "{{ lookup('password', 'domain_admin_password.txt length=16 chars=ascii_letters,digits,hexdigits,punctuation') }}"
+    upstream_dns_1: 10.150.10.10
+    upstream_dns_2: 10.150.10.11
+    reverse_dns_zone: "10.150.10.0/24"
+  gather_facts: yes
+  tasks:
+  - name: Add host to Ansible inventory
+    add_host:
+      name: '{{ temp_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ temp_address }}'
+  - name: Set static IP address
+    win_shell: "(new-netipaddress -InterfaceAlias Ethernet -IPAddress {{ dc_address }} -prefixlength {{dc_netmask_cidr}} -defaultgateway {{ dc_gateway }})"
+    delegate_to: '{{ temp_address }}'  
+    ignore_errors: True 
+  - name: Add host to Ansible inventory with new IP
+    add_host:
+      name: '{{ dc_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ dc_address }}'
+  - name: Set upstream DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '{{ upstream_dns_1 }}'
+      - '{{ upstream_dns_2 }}'
+    delegate_to: '{{ dc_address }}'
+  - name: Disable firewall for Domain, Public and Private profiles
+    win_firewall:
+      state: disabled
+      profiles:
+      - Domain
+      - Private
+      - Public
+    tags: disable_firewall
+    delegate_to: '{{ dc_address }}'
+  - name: Change the hostname 
+    win_hostname:
+      name: '{{ dc_hostname }}'
+    register: res
+    delegate_to: '{{ dc_address }}'
+  - name: Reboot
+    win_reboot:
+    when: res.reboot_required   
+    delegate_to: '{{ dc_address }}'
+  - name: Join the specified domain
+    win_domain_membership:
+      dns_domain_name: "{{ domain_name }}"
+      hostname: "{{ dc_hostname }}"
+      domain_admin_user: "{{ dc_admin }}"
+      domain_admin_password: "{{ dc_password }}"
+      state: domain
+      notify: reboot
+    delegate_to: '{{ dc_address }}'

@@ -1,0 +1,275 @@
+# Ansible Playbook to Create new Active Directory Domain & Forest
+# Uses password module to create Random Passwords
+# Stores Generated Passwords in C:\Support\passwords.txt for adding to CW Manage
+# Configures Upstream DNS Servers
+# Sets NTP Time Servers for Domain Controller
+---
+- name: Create new Active-Directory Domain & Forest
+  hosts: dc10
+  vars:
+    temp_address: 10.150.10.246
+    dc_address: 10.150.10.10
+    dc_netmask_cidr: 24
+    dc_gateway: 10.150.10.1
+    dc_hostname: 'dc10'
+    domain_name: "lab.local"
+    local_admin: '.\administrator'
+    temp_password: '3rt8hg23!'
+    dc_password: "{{ lookup('password', 'domain_admin_password.txt length=16 chars=ascii_letters,digits,hexdigits,punctuation') }}"
+    recovery_password: "{{ lookup('password', 'recovery_password.txt length=16 chars=ascii_letters,digits,hexdigits,punctuation') }}"
+    upstream_dns_1: 1.1.1.1
+    upstream_dns_2: 1.0.0.1
+    reverse_dns_zone: "10.150.10.0/24"
+    ntp_servers: "0.us.pool.ntp.org,1.us.pool.ntp.org,2.us.pool.ntp.org,3.us.pool.ntp.org"
+  gather_facts: yes
+  tasks:
+  - name: Add host to Ansible inventory
+    add_host:
+      name: '{{ temp_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ temp_address }}'
+  - name: Set static IP address
+    win_shell: "(new-netipaddress -InterfaceAlias Ethernet -IPAddress {{ dc_address }} -prefixlength {{dc_netmask_cidr}} -defaultgateway {{ dc_gateway }})"
+    delegate_to: '{{ temp_address }}'  
+    ignore_errors: True 
+  - name: Add host to Ansible inventory with new IP
+    add_host:
+      name: '{{ dc_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ temp_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ dc_address }}'
+  - name: Set Password
+    win_user:
+      name: administrator
+      password: "{{dc_password}}"
+      state: present
+    delegate_to: '{{ dc_address }}'
+    ignore_errors: True  
+  - name: Add host to Ansible inventory with new Password
+    add_host:
+      name: '{{ dc_address }}'
+      ansible_user: '{{ local_admin }}'
+      ansible_password: '{{ dc_password }}'
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_port: 5986 
+  - name: Wait for system to become reachable over WinRM
+    wait_for_connection:
+      timeout: 900
+    delegate_to: '{{ dc_address }}'
+  - name: Set upstream DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '{{ upstream_dns_1 }}'
+      - '{{ upstream_dns_2 }}'
+    delegate_to: '{{ dc_address }}'
+  - name: Stop the time service
+    win_service:
+      name: w32time
+      state: stopped
+    delegate_to: '{{ dc_address }}'
+  - name: Set NTP Servers
+    win_shell: 'w32tm /config /syncfromflags:manual /manualpeerlist:"{{ntp_servers}}"'
+    delegate_to: '{{ dc_address }}'  
+  - name: Start the time service
+    win_service:
+      name: w32time
+      state: started  
+    delegate_to: '{{ dc_address }}'
+  - name: Disable firewall for Domain, Public and Private profiles
+    win_firewall:
+      state: disabled
+      profiles:
+      - Domain
+      - Private
+      - Public
+    tags: disable_firewall
+    delegate_to: '{{ dc_address }}'
+  - name: Change the hostname 
+    win_hostname:
+      name: '{{ dc_hostname }}'
+    register: res
+    delegate_to: '{{ dc_address }}'
+  - name: Reboot
+    win_reboot:
+    when: res.reboot_required   
+    delegate_to: '{{ dc_address }}'
+  - name: Install Active Directory
+    win_feature: >
+         name=AD-Domain-Services
+         include_management_tools=yes
+         include_sub_features=yes
+         state=present
+    register: result
+    delegate_to: '{{ dc_address }}'
+  - name: Create Domain
+    win_domain: >
+       dns_domain_name='{{ domain_name }}'
+       safe_mode_password='{{ recovery_password }}'
+    register: ad
+    delegate_to: "{{ dc_address }}"
+  - name: reboot server
+    win_reboot:
+     msg: "Installing AD. Rebooting..."
+     pre_reboot_delay: 15
+    when: ad.changed
+    delegate_to: "{{ dc_address }}"
+  - name: Set internal DNS server 
+    win_dns_client:
+      adapter_names: '*'
+      ipv4_addresses:
+      - '127.0.0.1'
+    delegate_to: '{{ dc_address }}'
+  - name: Create reverse DNS zone
+    win_shell: "Add-DnsServerPrimaryZone -NetworkID {{reverse_dns_zone}} -ReplicationScope Forest"
+    delegate_to: "{{ dc_address }}"    
+    retries: 30
+    delay: 60
+    register: result           
+    until: result is succeeded
+  - name: Check for xRemoteDesktopAdmin Powershell module
+    win_psmodule:
+      name: xRemoteDesktopAdmin
+      state: present
+    delegate_to: "{{ dc_address }}"
+  - name: Enable Remote Desktop
+    win_dsc:
+      resource_name: xRemoteDesktopAdmin
+      Ensure: present
+      UserAuthentication: NonSecure
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for people
+    ldap_entry:
+      dn: ou=PEOPLE,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for employees
+    ldap_entry:
+      dn: ou=EMPLOYEES,ou=PEOPLE,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for vendors
+    ldap_entry:
+      dn: ou=VENDORS,ou=PEOPLE,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for devices
+    ldap_entry:
+      dn: ou=DEVICES,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for workstations
+    ldap_entry:
+      dn: ou=WORKSTATIONS,ou=DEVICES,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for servers
+    ldap_entry:
+      dn: ou=SERVERS,ou=DEVICES,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for groups
+    ldap_entry:
+      dn: ou=GROUPS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for resource groups
+    ldap_entry:
+      dn: ou=RESOURCES,ou=GROUPS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for security groups
+    ldap_entry:
+      dn: ou=SECURITY GROUPS,ou=GROUPS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for vendor groups
+    ldap_entry:
+      dn: ou=VENDOR GROUPS,ou=GROUPS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for service accounts
+    ldap_entry:
+      dn: ou=SERVICE ACCOUNTS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Make sure we have a parent entry for disabled users
+    ldap_entry:
+      dn: ou=DISABLED USERS,dc=lab,dc=local
+      objectClass: organizationalUnit
+    delegate_to: "{{ dc_address }}"
+  - name: Add User test-ro
+    win_domain_user:
+      name: test-ro
+      firstname: Test
+      surname: RO
+      password: 'T3stROP@ss'
+      domain_server: dc10
+      enabled: true
+      path: ou=EMPLOYEES,ou=PEOPLE,dc=lab,dc=local
+      state: present
+    register: win_domain_user_result
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
+  - name: Add User test-rw
+    win_domain_user:
+      name: test-rw
+      firstname: Test
+      surname: RW
+      password: 'T3stRWP@ss'
+      domain_server: dc10
+      enabled: true
+      path: ou=EMPLOYEES,ou=PEOPLE,dc=lab,dc=local
+      state: present
+    register: win_domain_user_result
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
+  - name: Create group
+    win_domain_group:
+      name: rw-test
+      scope: domainlocal
+      category: security
+      oranizational_unit: ou=RESOURCES,ou=GROUPS,dc=lab,dc=local
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
+  - name: Create group
+    win_domain_group:
+      name: ro-test
+      scope: domainlocal
+      category: security
+      oranizational_unit: ou=RESOURCES,ou=GROUPS,dc=lab,dc=local
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
+  - name: Add a domain user/group to a domain group
+    win_domain_group_membership:
+      name: ro-test
+      members:
+        - test-ro
+      state: present
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
+  - name: Add a domain user/group to a domain group
+    win_domain_group_membership:
+      name: rw-test
+      members:
+        - test-rw
+      state: present
+    ignore_errors: true
+    delegate_to: "{{ dc_address }}"
